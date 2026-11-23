@@ -24,6 +24,9 @@ contract CircuitVault is Ownable2Step, Pausable, ReentrancyGuard {
     uint16 public constant DEFAULT_MAX_DRAWDOWN_BPS = 1000; // 10%
     uint16 public constant DEFAULT_AAVE_CAP_BPS = 8000; // 80%
     uint16 public constant MIN_DRAWDOWN_BPS = 1;
+    /// @dev If a strategy exit fails with less than this much gas left, assume the caller
+    ///      starved the call (63/64 rule) and revert instead of latching a half-done exit.
+    uint256 internal constant EXIT_GAS_RESERVE = 50_000;
 
     struct Agent {
         bool active;
@@ -62,6 +65,7 @@ contract CircuitVault is Ownable2Step, Pausable, ReentrancyGuard {
     event Tripped(address indexed caller, uint256 totalValue, uint256 highWaterMark, uint256 drawdownBps, bool exited);
     event BreakerReset(address indexed by, uint256 highWaterMark);
     event StrategyExited(address indexed strategy, uint256 withdrawn);
+    event StrategyExitFailed(address indexed strategy, bytes reason);
 
     error NotAgent();
     error AgentExpired();
@@ -81,6 +85,7 @@ contract CircuitVault is Ownable2Step, Pausable, ReentrancyGuard {
     error StrategyHasAssets();
     error BadStrategy();
     error AlreadyListed();
+    error ExitOutOfGas();
 
     modifier onlyOwnerOrGuardian() {
         if (msg.sender != owner() && msg.sender != guardian) revert NotOwnerOrGuardian();
@@ -326,12 +331,18 @@ contract CircuitVault is Ownable2Step, Pausable, ReentrancyGuard {
         }
     }
 
+    /// @dev Best effort: one strategy that cannot exit (e.g. Aave at 100% utilization) must not
+    ///      block the breaker from latching or the other strategies from exiting. [audit M-1]
     function _exitAll() internal {
         uint256 n = _strategyList.length;
         for (uint256 i; i < n; ++i) {
             address s = _strategyList[i];
-            uint256 withdrawn = IStrategy(s).withdrawAll();
-            if (withdrawn > 0) emit StrategyExited(s, withdrawn);
+            try IStrategy(s).withdrawAll() returns (uint256 withdrawn) {
+                if (withdrawn > 0) emit StrategyExited(s, withdrawn);
+            } catch (bytes memory reason) {
+                if (gasleft() < EXIT_GAS_RESERVE) revert ExitOutOfGas();
+                emit StrategyExitFailed(s, reason);
+            }
         }
     }
 

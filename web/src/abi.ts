@@ -847,6 +847,25 @@ export const circuitVaultAbi = [
   },
   {
     "type": "event",
+    "name": "StrategyExitFailed",
+    "inputs": [
+      {
+        "name": "strategy",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "reason",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
     "name": "StrategyExited",
     "inputs": [
       {
@@ -1025,6 +1044,11 @@ export const circuitVaultAbi = [
         "internalType": "uint16"
       }
     ]
+  },
+  {
+    "type": "error",
+    "name": "ExitOutOfGas",
+    "inputs": []
   },
   {
     "type": "error",
