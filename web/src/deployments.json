@@ -6,10 +6,10 @@
     "aToken": "0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c"
   },
   "8453": {
-    "factory": "",
-    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+    "aToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB",
+    "factory": "0xd95fe751c8536f22334c1c8ddb56bbf7cbb150c0",
     "pool": "0xA238Dd80C259a72e81d7e4664a9801593F98d1c5",
-    "aToken": "0x4e65fE4DbA92790696d040ac24Aa414708F5c0AB"
+    "usdc": "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913"
   },
   "31337": {
     "factory": "",
