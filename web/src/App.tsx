@@ -1,19 +1,10 @@
 import { useState } from "react";
-import {
-  useAccount,
-  useChainId,
-  useConnect,
-  useDisconnect,
-  usePublicClient,
-  useReadContract,
-  useSwitchChain,
-  useWriteContract,
-} from "wagmi";
+import { useAccount, useChainId, useReadContract } from "wagmi";
 import { erc20Abi, formatUnits, isAddress, parseUnits, type Address } from "viem";
 import { circuitVaultAbi, circuitVaultFactoryAbi } from "./abi";
 import { deployments } from "./config";
+import { Addr, Empty, Hint, Loading, Shell, short, useTx } from "./ui";
 
-const short = (a?: string) => (a ? `${a.slice(0, 6)}…${a.slice(-4)}` : "");
 const fmtUsdc = (v?: bigint) => (v === undefined ? "…" : Number(formatUnits(v, 6)).toLocaleString(undefined, { maximumFractionDigits: 2 }));
 const fmtBps = (v?: bigint | number) => {
   if (v === undefined) return "…";
@@ -24,63 +15,34 @@ const fmtBps = (v?: bigint | number) => {
 export default function App() {
   const { address, isConnected } = useAccount();
   const chainId = useChainId();
-  const { connect, connectors } = useConnect();
-  const { disconnect } = useDisconnect();
-  const { switchChain, chains } = useSwitchChain();
   const dep = deployments[chainId] ?? {};
   const [vault, setVault] = useState<Address | "">("");
 
   return (
-    <div className="wrap">
-      <h1>Circuit Vault</h1>
-      <div className="muted">
-        A personal USDC vault. Your agent may rebalance only between cash and owner-whitelisted
-        strategies (v1: Aave V3 USDC supply), within allocation caps. A high-water-mark breaker
-        lets anyone trip the vault if drawdown hits your limit. Prototype — not audited. Ethereum,
-        Base and local anvil.
-      </div>
-
-      <div className="card">
-        <h2>Wallet</h2>
-        {!isConnected ? (
-          <div className="row">
-            {connectors.map((c) => (
-              <button key={c.uid} onClick={() => connect({ connector: c })}>
-                Connect {c.name}
-              </button>
-            ))}
-          </div>
-        ) : (
-          <div className="row">
-            <span>
-              Connected <code>{address}</code>
-            </span>
-            <button className="ghost" onClick={() => disconnect()}>
-              Disconnect
-            </button>
-          </div>
-        )}
-        <div className="row">
-          {chains.map((c) => (
-            <button key={c.id} className={c.id === chainId ? "" : "ghost"} onClick={() => switchChain({ chainId: c.id })}>
-              {c.name}
-            </button>
-          ))}
-        </div>
-        {!deployments[chainId] && <div className="warn">Unsupported chain: use Ethereum, Base or local anvil.</div>}
-        {deployments[chainId] && !dep.factory && (
-          <div className="warn">
-            <strong>Not deployed yet</strong> on this chain — the factory address is empty. Core flows stay disabled until
-            you deploy (<code>make deploy-mainnet</code> or <code>make deploy-base</code>), which writes the address into{" "}
-            <code>web/src/deployments.json</code>. You can still paste an existing vault address below after connecting.
-          </div>
-        )}
-        {deployments[chainId]?.live && dep.factory && (
-          <div className="warn">
-            Live chain with real funds. This contract is NOT audited. Only deposit amounts you can afford to lose.
-          </div>
-        )}
-      </div>
+    <Shell
+      title="Circuit Vault"
+      tagline="A personal USDC vault with a circuit breaker. Your AI agent can only move funds between cash and strategies you whitelist (v1: Aave V3 USDC supply), within caps you set. If the vault falls a set percentage below its peak, anyone can trip the breaker and the agent is blocked."
+      steps={[
+        "Create a vault you own and deposit USDC.",
+        "Set the Aave cap and the maximum drawdown, then grant an agent key with an expiry.",
+        "The agent rebalances between cash and Aave inside those limits. It can never withdraw.",
+        "Breaker trips at your drawdown limit. Only you can withdraw, reset or unpause.",
+      ]}
+      contractLabel="Vault factory"
+      contractOf={(id) => deployments[id]?.factory}
+      refs={[
+        { label: "USDC", address: dep.usdc },
+        { label: "Aave V3 pool", address: dep.pool },
+        { label: "Aave aUSDC", address: dep.aToken },
+      ]}
+      risk={
+        <>
+          <strong>Real funds.</strong> This contract is not audited. USDC supplied to Aave carries Aave's own risks, and
+          the breaker limits losses only after someone trips it. Only deposit amounts you can afford to lose.
+        </>
+      }
+    >
+      {!isConnected && <Empty>Connect a wallet to create a vault or manage one you already own.</Empty>}
 
       {isConnected && address && (
         <>
@@ -96,28 +58,8 @@ export default function App() {
           )}
         </>
       )}
-    </div>
+    </Shell>
   );
-}
-
-function useTx() {
-  const { writeContractAsync } = useWriteContract();
-  const client = usePublicClient();
-  const [status, setStatus] = useState("");
-  const run = async (label: string, fn: () => Promise<`0x${string}`>) => {
-    try {
-      setStatus(`${label}: confirm in wallet…`);
-      const hash = await fn();
-      setStatus(`${label}: pending ${short(hash)}`);
-      await client!.waitForTransactionReceipt({ hash });
-      setStatus(`${label}: confirmed ✓`);
-      return true;
-    } catch (e) {
-      setStatus(`${label}: ${(e as Error).message.split("\n")[0]}`);
-      return false;
-    }
-  };
-  return { writeContractAsync, status, run };
 }
 
 function VaultPicker(props: {
@@ -127,62 +69,61 @@ function VaultPicker(props: {
   setVault: (v: Address | "") => void;
 }) {
   const { owner, factory, vault, setVault } = props;
-  const { data: vaults, refetch } = useReadContract({
+  const { data: vaults, refetch, isLoading } = useReadContract({
     address: factory,
     abi: circuitVaultFactoryAbi,
     functionName: "vaultsOf",
     args: [owner],
     query: { enabled: !!factory },
   });
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe } = useTx();
   return (
     <div className="card">
-      <h2>1. Vault</h2>
-      {!factory && (
-        <div className="warn">
-          <strong>Not deployed yet.</strong> No factory address for this chain. Deploy first (see DEPLOY.md), or set
-          VITE_FACTORY_* in web/.env.
+      <h2>1. Choose a vault</h2>
+      <p className="muted">A vault is your own contract. It holds the USDC and enforces the agent limits.</p>
+      <div className="field-label">Your vaults on this network</div>
+      {!factory ? (
+        <Empty>No factory on this network, so vaults cannot be listed or created here.</Empty>
+      ) : isLoading ? (
+        <Loading>Looking up your vaults…</Loading>
+      ) : vaults && vaults.length > 0 ? (
+        <div className="row">
+          {vaults.map((v) => (
+            <button key={v} className={v === vault ? "seg seg-on" : "seg"} aria-pressed={v === vault} onClick={() => setVault(v)}>
+              <code>{short(v)}</code>
+              <span className="seg-sub">{v === vault ? "selected" : "select"}</span>
+            </button>
+          ))}
         </div>
+      ) : (
+        <Empty>This wallet has no vaults yet. Create one below, or paste the address of a vault you want to inspect.</Empty>
       )}
       <div className="row">
         <button
           disabled={!factory}
-          onClick={async () => {
+          onClick={safe(async () => {
             const ok = await run("Create vault", () =>
               writeContractAsync({ address: factory!, abi: circuitVaultFactoryAbi, functionName: "createVault" }),
             );
-            if (ok) refetch();
-          }}
+            if (ok) {
+              const list = (await refetch()).data ?? [];
+              if (list.length) setVault(list[list.length - 1]);
+            }
+          })}
         >
-          Create vault
+          Create new vault
         </button>
-      </div>
-      {!!vaults?.length && (
-        <div className="row">
-          <label>
-            Your vaults
-            <select value={vault} onChange={(e) => setVault(e.target.value as Address)}>
-              <option value="">Select…</option>
-              {vaults.map((v) => (
-                <option key={v} value={v}>
-                  {v}
-                </option>
-              ))}
-            </select>
-          </label>
-        </div>
-      )}
-      <div className="row">
         <label>
-          Or paste a vault address
-          <input
-            value={vault}
-            onChange={(e) => setVault((e.target.value as Address) || "")}
-            placeholder="0x…"
-          />
+          Or open a vault by address
+          <input value={vault} placeholder="0x…" spellCheck={false} onChange={(e) => setVault(e.target.value.trim() as Address)} />
         </label>
       </div>
-      {status && <div className="muted">{status}</div>}
+      {vault && !isAddress(vault) && <div className="bad muted">That is not a valid address (0x followed by 40 hex characters).</div>}
+      <Hint>
+        “Create new vault” deploys a vault contract owned by your connected wallet. One transaction, gas only — no
+        funds move.
+      </Hint>
+      {status}
     </div>
   );
 }
@@ -193,15 +134,23 @@ function Overview({ vault, usdc }: { vault: Address; usdc?: Address }) {
   const { data: owner } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "owner" });
   const { data: aave } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "aaveStrategy" });
   const { data: paused } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "paused" });
+  const { address: me } = useAccount();
+  const isMe = !!me && !!owner && me.toLowerCase() === owner.toLowerCase();
   return (
     <div className="card">
       <h2>2. Overview</h2>
       <table>
         <tbody>
           <tr>
+            <th>Vault</th>
+            <td>
+              <Addr value={vault} full />
+            </td>
+          </tr>
+          <tr>
             <th>Owner</th>
             <td>
-              <code>{owner}</code>
+              <Addr value={owner} /> {isMe && <span className="ok">(you)</span>}
             </td>
           </tr>
           <tr>
@@ -215,21 +164,24 @@ function Overview({ vault, usdc }: { vault: Address; usdc?: Address }) {
           <tr>
             <th>Aave adapter</th>
             <td>
-              <code>{aave}</code>
+              <Addr value={aave} />
             </td>
           </tr>
           <tr>
             <th>USDC</th>
             <td>
-              <code>{usdc}</code>
+              <Addr value={usdc} />
             </td>
           </tr>
           <tr>
-            <th>Paused</th>
-            <td className={paused ? "bad" : "ok"}>{paused ? "yes" : "no"}</td>
+            <th>Agent rebalancing</th>
+            <td className={paused ? "bad" : "ok"}>{paused === undefined ? "…" : paused ? "Paused" : "Active"}</td>
           </tr>
         </tbody>
       </table>
+      {owner === undefined && total === undefined && (
+        <p className="muted">If these stay empty, this address is not a Circuit Vault on this network.</p>
+      )}
     </div>
   );
 }
@@ -298,7 +250,7 @@ function Drawdown({ vault }: { vault: Address }) {
   const { data: canTrip } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "canTrip" });
   const { data: tripped } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "tripped" });
   const { data: autoExit } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "autoExitOnTrip" });
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe } = useTx();
   const breached = !!tripped || !!canTrip;
   return (
     <div className="card">
@@ -346,7 +298,13 @@ function Drawdown({ vault }: { vault: Address }) {
           Checkpoint HWM
         </button>
       </div>
-      {status && <div className="muted">{status}</div>}
+      <Hint>
+        “Trip breaker” can be pressed by anyone once drawdown reaches the limit: it blocks the agent
+        {autoExit ? " and unwinds every strategy back to USDC inside the vault" : " (funds stay where they are)"}. No
+        funds leave the vault. “Checkpoint HWM” raises the high-water mark to the current value if it has grown; it
+        never lowers it.
+      </Hint>
+      {status}
     </div>
   );
 }
@@ -355,7 +313,7 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
   const { address } = useAccount();
   const { data: owner } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "owner" });
   const { data: aave } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "aaveStrategy" });
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe, fail } = useTx();
   const [amount, setAmount] = useState("1000");
   const [agent, setAgent] = useState("");
   const [days, setDays] = useState("30");
@@ -368,7 +326,10 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
     return (
       <div className="card">
         <h2>5. Owner controls</h2>
-        <div className="muted">Connect the vault owner wallet to deposit, withdraw, pause, revoke or reset the breaker.</div>
+        <Empty>
+          Only the vault owner (<Addr value={owner} copy={false} />) can deposit, withdraw, grant agents or reset the
+          breaker. Connect that wallet to use these controls.
+        </Empty>
       </div>
     );
   }
@@ -376,14 +337,15 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
   return (
     <div className="card">
       <h2>5. Owner controls</h2>
+      <h3>Deposit and withdraw</h3>
       <div className="row">
         <label>
           Amount (USDC)
-          <input value={amount} onChange={(e) => setAmount(e.target.value)} />
+          <input value={amount} inputMode="decimal" onChange={(e) => setAmount(e.target.value)} />
         </label>
         <button
           disabled={!usdc}
-          onClick={async () => {
+          onClick={safe(async () => {
             const ok = await run("Approve USDC", () =>
               writeContractAsync({ address: usdc!, abi: erc20Abi, functionName: "approve", args: [vault, units()] }),
             );
@@ -392,7 +354,7 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
                 writeContractAsync({ address: vault, abi: circuitVaultAbi, functionName: "deposit", args: [units()] }),
               );
             }
-          }}
+          })}
         >
           Approve + deposit
         </button>
@@ -411,10 +373,16 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
           Withdraw cash
         </button>
       </div>
+      <Hint>
+        Deposit asks twice: an approval for exactly this amount, then the deposit, which moves the USDC from your
+        wallet into the vault as cash. Withdraw sends that amount of the vault's cash back to your connected wallet;
+        to withdraw funds that are in Aave, use “Exit all to cash” first.
+      </Hint>
+      <h3>Agent key</h3>
       <div className="row">
         <label>
-          Agent
-          <input value={agent} onChange={(e) => setAgent(e.target.value)} placeholder="0x…" />
+          Agent address
+          <input value={agent} spellCheck={false} onChange={(e) => setAgent(e.target.value.trim())} placeholder="0x…" />
         </label>
         <label>
           Expiry (days)
@@ -422,8 +390,10 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
         </label>
         <button
           disabled={!isAddress(agent)}
-          onClick={() => {
-            const expiry = BigInt(Math.floor(Date.now() / 1000) + Number(days) * 86400);
+          onClick={safe(() => {
+            const d = Number(days);
+            if (!Number.isFinite(d) || d <= 0) return fail("Expiry must be a number of days greater than 0.");
+            const expiry = BigInt(Math.floor(Date.now() / 1000 + d * 86400));
             return run("Grant agent", () =>
               writeContractAsync({
                 address: vault,
@@ -432,9 +402,9 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
                 args: [agent as Address, expiry],
               }),
             );
-          }}
+          })}
         >
-          Grant
+          Grant agent
         </button>
         <button
           className="danger"
@@ -450,9 +420,14 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
             )
           }
         >
-          Revoke
+          Revoke agent
         </button>
       </div>
+      <Hint>
+        Grant lets that address rebalance between cash and whitelisted strategies until the expiry. It cannot
+        withdraw or send funds anywhere else. Revoke removes the key immediately.
+      </Hint>
+      <h3>Limits</h3>
       <div className="row">
         <label>
           Aave cap (%)
@@ -492,8 +467,13 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
           Set limit
         </button>
       </div>
+      <Hint>
+        The Aave cap is the largest share of the vault the agent may place in Aave. Max drawdown is how far the vault
+        may fall below its high-water mark before the breaker can be tripped.
+      </Hint>
+      <h3>Emergency</h3>
       <div className="row">
-        <button onClick={() => run("Pause", () => writeContractAsync({ address: vault, abi: circuitVaultAbi, functionName: "pause" }))}>
+        <button className="danger" onClick={() => run("Pause", () => writeContractAsync({ address: vault, abi: circuitVaultAbi, functionName: "pause" }))}>
           Pause
         </button>
         <button
@@ -523,19 +503,24 @@ function OwnerControls({ vault, usdc }: { vault: Address; usdc?: Address }) {
           Reset breaker
         </button>
       </div>
-      {status && <div className="muted">{status}</div>}
+      <Hint tone="danger">
+        Pause blocks agent rebalancing at once; you can still withdraw. “Exit all to cash” pulls everything out of
+        Aave back into the vault. “Reset breaker” clears a trip and re-arms it at the current value; it does not
+        unpause.
+      </Hint>
+      {status}
     </div>
   );
 }
 
 function AgentRebalance({ vault }: { vault: Address }) {
   const { data: aave } = useReadContract({ address: vault, abi: circuitVaultAbi, functionName: "aaveStrategy" });
-  const { writeContractAsync, status, run } = useTx();
+  const { writeContractAsync, status, run, safe } = useTx();
   const [target, setTarget] = useState("0");
   return (
     <div className="card">
       <h2>6. Agent rebalance</h2>
-      <div className="muted">Set the target USDC amount in the Aave sleeve. The rest stays as cash. Blocked if paused or tripped.</div>
+      <p className="muted">For the granted agent key. Other wallets are rejected.</p>
       <div className="row">
         <label>
           Target in Aave (USDC)
@@ -557,7 +542,11 @@ function AgentRebalance({ vault }: { vault: Address }) {
           Rebalance
         </button>
       </div>
-      {status && <div className="muted">{status}</div>}
+      <Hint>
+        Moves USDC between the vault's cash and Aave until Aave holds the target amount. Funds never leave the vault.
+        Rejected if the vault is paused, tripped, past its drawdown limit, or the target exceeds the Aave cap.
+      </Hint>
+      {status}
     </div>
   );
 }
