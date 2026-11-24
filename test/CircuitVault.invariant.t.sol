@@ -37,7 +37,6 @@ contract Handler is Test {
 
     function rebalance(uint256 target) external {
         calls++;
-        lastWasAccrue = false;
         target = bound(target, 0, 200_000e6);
         bool blocked = vault.paused() || vault.tripped() || vault.canTrip();
         (bool active, uint64 expiry) = vault.agents(agent);
@@ -45,6 +44,7 @@ contract Handler is Test {
         uint256 outsiderBefore = usdc.balanceOf(outsider) + usdc.balanceOf(agent);
         vm.prank(agent);
         try vault.rebalance(aave, target) {
+            lastWasAccrue = false; // a successful rebalance re-checks the cap
             ghostSuccessfulRebalances++;
             if (blocked) ghostRebalanceWhileBlocked++;
             (bool allowed, uint16 capBps,) = vault.strategies(aave);
@@ -85,7 +85,6 @@ contract Handler is Test {
     }
 
     function ownerDeposit(uint256 amt) external {
-        lastWasAccrue = false;
         amt = bound(amt, 1, 50_000e6);
         uint256 bal = usdc.balanceOf(owner);
         if (amt > bal) amt = bal;
@@ -96,15 +95,15 @@ contract Handler is Test {
     }
 
     function ownerWithdraw(uint256 amt) external {
-        lastWasAccrue = false;
         amt = bound(amt, 1, vault.cash());
         if (amt == 0) return;
         vm.prank(owner);
-        try vault.withdraw(owner, amt) {} catch {}
+        try vault.withdraw(owner, amt) {
+            lastWasAccrue = false; // withdraw enforces caps (_assertCaps)
+        } catch {}
     }
 
     function togglePause(bool p) external {
-        lastWasAccrue = false;
         bool isPaused = vault.paused();
         vm.prank(owner);
         if (p && !isPaused) vault.pause();
@@ -112,9 +111,10 @@ contract Handler is Test {
     }
 
     function ownerExit() external {
-        lastWasAccrue = false;
         vm.prank(owner);
-        try vault.exitAll() {} catch {}
+        try vault.exitAll() {
+            lastWasAccrue = false; // strategy emptied
+        } catch {}
     }
 
     function ownerReset() external {
